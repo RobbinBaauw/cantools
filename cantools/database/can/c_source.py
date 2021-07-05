@@ -4,7 +4,6 @@ from decimal import Decimal
 
 from ...version import __version__
 
-
 HEADER_FMT = '''\
 /**
  * The MIT License (MIT)
@@ -533,6 +532,16 @@ SIGNAL_MEMBER_FMT = '''\
     {type_name} {name}{length};\
 '''
 
+SIGNAL_ENUM_FMT = '''\
+    enum class {name} {{ 
+{fields}
+    }};
+'''
+
+SIGNAL_ENUM_FIELD_FMT = '''\
+        {name}={value},
+'''
+
 
 class Signal(object):
 
@@ -598,6 +607,10 @@ class Signal(object):
             }[self.type_length]
         except KeyError:
             return ''
+
+    @property
+    def enum_name(self):
+        return f"{self.snake_name}_e"
 
     @property
     def unique_choices(self):
@@ -740,7 +753,7 @@ class Message(object):
     def __init__(self, message):
         self._message = message
         self.snake_name = camel_to_snake_case(self.name)
-        self.signals = [Signal(signal)for signal in message.signals]
+        self.signals = [Signal(signal) for signal in message.signals]
 
     def __getattr__(self, name):
         return getattr(self._message, name)
@@ -848,15 +861,31 @@ def _generate_signal(signal, bit_fields):
     else:
         length = ' : {}'.format(signal.length)
 
+    type_name = signal.type_name
+    if signal.choices is not None:
+        type_name = signal.enum_name
+
     member = SIGNAL_MEMBER_FMT.format(comment=comment,
                                       range=range_,
                                       scale=scale,
                                       offset=offset,
-                                      type_name=signal.type_name,
+                                      type_name=type_name,
                                       name=signal.snake_name,
                                       length=length)
 
     return member
+
+
+def _generate_enum(signal):
+    choices = []
+    for choice_id, choice_name in signal.unique_choices.items():
+        choice = SIGNAL_ENUM_FIELD_FMT.format(name=choice_name, value=choice_id)
+        choices.append(choice)
+
+    enum = SIGNAL_ENUM_FMT.format(name=signal.enum_name,
+                                  fields="".join(choices))
+
+    return enum
 
 
 def _format_pack_code_mux(message,
@@ -1132,6 +1161,10 @@ def _format_unpack_code(message, helper_kinds):
 
 def _generate_struct(message, bit_fields):
     members = []
+
+    for signal in message.signals:
+        if signal.choices is not None:
+            members.append(_generate_enum(signal))
 
     for signal in message.signals:
         members.append(_generate_signal(signal, bit_fields))
