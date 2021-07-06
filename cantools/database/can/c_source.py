@@ -38,9 +38,8 @@ HEADER_FMT = '''\
 #ifndef {include_guard}
 #define {include_guard}
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <stddef.h>
+#include <cstdint>
+#include <cstddef>
 #include <type_traits>
 
 namespace can::{database_name} {{
@@ -335,7 +334,7 @@ STRUCT_FMT = '''\
 {comment}\
  * All signal values are as on the CAN bus.
  */
-struct {database_name}_{message_name}_t {{
+struct {message_name}_t {{
 {members}
 }};
 '''
@@ -350,9 +349,9 @@ DECLARATION_FMT = '''\
  *
  * @return Size of packed data, or negative error code.
  */
-int {database_name}_{message_name}_pack(
+int {message_name}_pack(
     uint8_t *dst_p,
-    const struct {database_name}_{message_name}_t *src_p,
+    const struct {message_name}_t *src_p,
     size_t size);
 
 /**
@@ -364,8 +363,8 @@ int {database_name}_{message_name}_pack(
  *
  * @return zero(0) or negative error code.
  */
-int {database_name}_{message_name}_unpack(
-    struct {database_name}_{message_name}_t *dst_p,
+int {message_name}_unpack(
+    struct {message_name}_t *dst_p,
     const uint8_t *src_p,
     size_t size);
 '''
@@ -378,7 +377,7 @@ SIGNAL_DECLARATION_ENCODE_DECODE_FMT = '''\
  *
  * @return Encoded signal.
  */
-{type_name} {database_name}_{message_name}_{signal_name}_encode(double value);
+{type_name} {message_name}_{signal_name}_encode(double value);
 
 /**
  * Decode given signal by applying scaling and offset.
@@ -387,7 +386,7 @@ SIGNAL_DECLARATION_ENCODE_DECODE_FMT = '''\
  *
  * @return Decoded signal.
  */
-double {database_name}_{message_name}_{signal_name}_decode({type_name} value);
+double {message_name}_{signal_name}_decode({type_name} value);
 
 '''
 
@@ -399,7 +398,7 @@ SIGNAL_DECLARATION_IS_IN_RANGE_FMT = '''\
  *
  * @return true if in range, false otherwise.
  */
-bool {database_name}_{message_name}_{signal_name}_is_in_range({type_name} value);
+bool {message_name}_{signal_name}_is_in_range({type_name} value);
 '''
 
 PACK_HELPER_LEFT_SHIFT_FMT = '''\
@@ -443,9 +442,9 @@ static inline {var_type} unpack_right_shift_u{length}(
 '''
 
 DEFINITION_FMT = '''\
-int {database_name}_{message_name}_pack(
+int {message_name}_pack(
     uint8_t *dst_p,
-    const struct {database_name}_{message_name}_t *src_p,
+    const struct {message_name}_t *src_p,
     size_t size)
 {{
 {pack_unused}\
@@ -459,8 +458,8 @@ int {database_name}_{message_name}_pack(
     return ({message_length});
 }}
 
-int {database_name}_{message_name}_unpack(
-    struct {database_name}_{message_name}_t *dst_p,
+int {message_name}_unpack(
+    struct {message_name}_t *dst_p,
     const uint8_t *src_p,
     size_t size)
 {{
@@ -475,12 +474,12 @@ int {database_name}_{message_name}_unpack(
 '''
 
 SIGNAL_DEFINITION_ENCODE_DECODE_FMT = '''\
-{type_name} {database_name}_{message_name}_{signal_name}_encode(double value)
+{type_name} {message_name}_{signal_name}_encode(double value)
 {{
     return ({type_name})({encode});
 }}
 
-double {database_name}_{message_name}_{signal_name}_decode({type_name} value)
+double {message_name}_{signal_name}_decode({type_name} value)
 {{
     return ({decode});
 }}
@@ -488,7 +487,7 @@ double {database_name}_{message_name}_{signal_name}_decode({type_name} value)
 '''
 
 SIGNAL_DEFINITION_IS_IN_RANGE_FMT = '''\
-bool {database_name}_{message_name}_{signal_name}_is_in_range({type_name} value)
+bool {message_name}_{signal_name}_is_in_range({type_name} value)
 {{
 {unused}\
     return ({check});
@@ -496,9 +495,9 @@ bool {database_name}_{message_name}_{signal_name}_is_in_range({type_name} value)
 '''
 
 EMPTY_DEFINITION_FMT = '''\
-int {database_name}_{message_name}_pack(
+int {message_name}_pack(
     uint8_t *dst_p,
-    const struct {database_name}_{message_name}_t *src_p,
+    const struct {message_name}_t *src_p,
     size_t size)
 {{
     (void)dst_p;
@@ -508,8 +507,8 @@ int {database_name}_{message_name}_pack(
     return (0);
 }}
 
-int {database_name}_{message_name}_unpack(
-    struct {database_name}_{message_name}_t *dst_p,
+int {message_name}_unpack(
+    struct {message_name}_t *dst_p,
     const uint8_t *src_p,
     size_t size)
 {{
@@ -762,7 +761,7 @@ class Message(object):
         self.database_name = database_name
 
         self.snake_name = camel_to_snake_case(self.name)
-        self.struct_name = f"{database_name}_{self.snake_name}_t"
+        self.struct_name = f"{self.snake_name}_t"
 
         self.signals = [Signal(signal) for signal in message.signals]
 
