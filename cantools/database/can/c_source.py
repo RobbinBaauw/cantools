@@ -65,9 +65,9 @@ namespace can::{database_name} {{
 {choices_defines}
 
 template <typename Enum>
-constexpr inline std::enable_if_t<std::is_enum<Enum>::value, Enum> operator|(Enum a, Enum b) {{
+constexpr inline std::enable_if_t<std::is_enum<Enum>::value, Enum> operator|=(Enum &a, Enum b) {{
   using underlying = typename std::underlying_type_t<Enum>;
-  return static_cast<Enum>(static_cast<underlying>(a) | static_cast<underlying>(b));
+  return a = static_cast<Enum>(static_cast<underlying>(a) | static_cast<underlying>(b));
 }}
 
 {structs}
@@ -1168,7 +1168,8 @@ def _generate_struct(message, bit_fields):
 
     for signal in message.signals:
         if signal.choices is not None:
-            members.append(_generate_enum(signal))
+            enum = _generate_enum(message, signal)
+            members.append(enum)
 
     for signal in message.signals:
         members.append(_generate_signal(signal, bit_fields))
