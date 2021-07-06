@@ -38,13 +38,12 @@ HEADER_FMT = '''\
 #ifndef {include_guard}
 #define {include_guard}
 
-#ifdef __cplusplus
-extern "C" {{
-#endif
-
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <type_traits>
+
+namespace can::{database_name} {{
 
 #ifndef EINVAL
 #    define EINVAL 22
@@ -65,13 +64,16 @@ extern "C" {{
 /* Signal choices. */
 {choices_defines}
 
+template <typename Enum>
+constexpr inline std::enable_if_t<std::is_enum<Enum>::value, Enum> operator|(Enum a, Enum b) {{
+  using underlying = typename std::underlying_type_t<Enum>;
+  return static_cast<Enum>(static_cast<underlying>(a) | static_cast<underlying>(b));
+}}
+
 {structs}
 {declarations}
 
-#ifdef __cplusplus
 }}
-#endif
-
 #endif
 '''
 
@@ -110,8 +112,12 @@ SOURCE_FMT = '''\
 
 #include "{header}"
 
+namespace can::{database_name} {{
+
 {helpers}\
 {definitions}\
+
+}}
 '''
 
 FUZZER_SOURCE_FMT = '''\
@@ -538,6 +544,7 @@ SIGNAL_ENUM_FMT = '''\
     }};
 '''
 
+
 SIGNAL_ENUM_FIELD_FMT = '''\
         {name}={value},
 '''
@@ -750,9 +757,13 @@ class Signal(object):
 
 class Message(object):
 
-    def __init__(self, message):
+    def __init__(self, message, database_name):
         self._message = message
+        self.database_name = database_name
+
         self.snake_name = camel_to_snake_case(self.name)
+        self.struct_name = f"{database_name}_{self.snake_name}_t"
+
         self.signals = [Signal(signal) for signal in message.signals]
 
     def __getattr__(self, name):
@@ -876,7 +887,7 @@ def _generate_signal(signal, bit_fields):
     return member
 
 
-def _generate_enum(signal):
+def _generate_enum(message, signal):
     choices = []
     for choice_id, choice_name in signal.unique_choices.items():
         choice = SIGNAL_ENUM_FIELD_FMT.format(name=choice_name, value=choice_id)
@@ -953,16 +964,12 @@ def _format_pack_code_signal(message,
 
     for index, shift, shift_direction, mask in signal.segments(invert_shift=False):
         if signal.is_float or signal.is_signed:
-            fmt = '    dst_p[{}] |= pack_{}_shift_u{}({}, {}u, 0x{:02x}u);'
+            line = f'    dst_p[{index}] |= pack_{shift_direction}_shift_u{signal.type_length}({signal.snake_name}, {shift}u, 0x{mask:02x}u);'
+        elif signal.choices is None:
+            line = f'    dst_p[{index}] |= pack_{shift_direction}_shift_u{signal.type_length}(src_p->{signal.snake_name}, {shift}u, 0x{mask:02x}u);'
         else:
-            fmt = '    dst_p[{}] |= pack_{}_shift_u{}(src_p->{}, {}u, 0x{:02x}u);'
+            line = f'    dst_p[{index}] |= pack_{shift_direction}_shift_u{signal.type_length}(static_cast<{signal.type_name}>(src_p->{signal.snake_name}), {shift}u, 0x{mask:02x}u);'
 
-        line = fmt.format(index,
-                          shift_direction,
-                          signal.type_length,
-                          signal.snake_name,
-                          shift,
-                          mask)
         body_lines.append(line)
         helper_kinds.add((shift_direction, signal.type_length))
 
@@ -1066,18 +1073,15 @@ def _format_unpack_code_signal(message,
     segments = signal.segments(invert_shift=True)
 
     for i, (index, shift, shift_direction, mask) in enumerate(segments):
-        if signal.is_float or signal.is_signed:
-            fmt = '    {} {} unpack_{}_shift_u{}(src_p[{}], {}u, 0x{:02x}u);'
-        else:
-            fmt = '    dst_p->{} {} unpack_{}_shift_u{}(src_p[{}], {}u, 0x{:02x}u);'
+        operator = '=' if i == 0 else '|='
 
-        line = fmt.format(signal.snake_name,
-                          '=' if i == 0 else '|=',
-                          shift_direction,
-                          signal.type_length,
-                          index,
-                          shift,
-                          mask)
+        if signal.is_float or signal.is_signed:
+            line = f'    {signal.snake_name} {operator} unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u);'
+        elif signal.choices is None:
+            line = f'    dst_p->{signal.snake_name} {operator} unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u);'
+        else:
+            line = f'    dst_p->{signal.snake_name} {operator} static_cast<{message.struct_name}::{signal.enum_name}>(unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u));'
+
         body_lines.append(line)
         helper_kinds.add((shift_direction, signal.type_length))
 
@@ -1579,7 +1583,7 @@ def generate(database,
     """
 
     date = time.ctime()
-    messages = [Message(message) for message in database.messages]
+    messages = [Message(message, database_name) for message in database.messages]
     include_guard = '{}_H'.format(database_name.upper())
     frame_id_defines = _generate_frame_id_defines(database_name, messages)
     frame_length_defines = _generate_frame_length_defines(database_name,
@@ -1609,13 +1613,15 @@ def generate(database,
                                frame_cycle_time_defines=frame_cycle_time_defines,
                                choices_defines=choices_defines,
                                structs=structs,
-                               declarations=declarations)
+                               declarations=declarations,
+                               database_name=database_name)
 
     source = SOURCE_FMT.format(version=__version__,
                                date=date,
                                header=header_name,
                                helpers=helpers,
-                               definitions=definitions)
+                               definitions=definitions,
+                               database_name=database_name)
 
     fuzzer_source, fuzzer_makefile = _generate_fuzzer_source(
         database_name,
