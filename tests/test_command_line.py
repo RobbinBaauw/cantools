@@ -3,6 +3,8 @@ import os
 import re
 import shutil
 import unittest
+import types
+import functools
 
 try:
     from unittest.mock import patch
@@ -15,6 +17,35 @@ except ImportError:
     from io import StringIO
 
 import cantools
+
+
+def with_fake_screen_width(screen_width):
+    def decorator(test_method):
+        @functools.wraps(test_method)
+        def wrapper(*args, **kwargs):
+            default_curses = None
+            try:
+                import curses
+            except ImportError:
+                pass
+            else:
+                default_curses = curses
+                curses_mock_name = 'curses_mock'
+                curses_mock = types.ModuleType(curses_mock_name)
+                sys.modules['curses'] = curses_mock
+                curses_mock.initscr = lambda: types.SimpleNamespace(getmaxyx=lambda: (0, screen_width))
+                curses_mock.endwin = lambda: None
+
+            test_method_return = test_method(*args, **kwargs)
+
+            if default_curses is not None:
+                sys.modules['curses'] = default_curses
+
+            # A test method doesn't return anything, but return anyway to be
+            # completely transparent.
+            return test_method_return
+        return wrapper
+    return decorator
 
 
 def remove_date_time(string):
@@ -73,7 +104,7 @@ DRIVER_HEARTBEAT(
   vcan0  1F4   [4]  01 02 03 04 ::
 IO_DEBUG(
     IO_DEBUG_test_unsigned: 1,
-    IO_DEBUG_test_enum: 'IO_DEBUG_test2_enum_two',
+    IO_DEBUG_test_enum: IO_DEBUG_test2_enum_two,
     IO_DEBUG_test_signed: 3,
     IO_DEBUG_test_float: 2.0
 )
@@ -90,7 +121,12 @@ IO_DEBUG(
                     self.assertEqual(actual_output, expected_output)
 
     def test_decode_timestamp_absolute(self):
-        argv = ['cantools', 'decode', 'tests/files/dbc/socialledge.dbc']
+        argv = [
+            'cantools',
+            'decode',
+            '--prune',
+            'tests/files/dbc/socialledge.dbc'
+        ]
         input_data = """\
  (2020-12-19 12:04:45.485261)  vcan0  0C8   [8]  F0 00 00 00 00 00 00 00
  (2020-12-19 12:04:48.597222)  vcan0  064   [8]  F0 01 FF FF FF FF FF FF
@@ -115,7 +151,7 @@ DRIVER_HEARTBEAT(
  (2020-12-19 12:04:56.805087)  vcan0  1F4   [4]  01 02 03 04 ::
 IO_DEBUG(
     IO_DEBUG_test_unsigned: 1,
-    IO_DEBUG_test_enum: 'IO_DEBUG_test2_enum_two',
+    IO_DEBUG_test_enum: two,
     IO_DEBUG_test_signed: 3,
     IO_DEBUG_test_float: 2.0
 )
@@ -132,7 +168,12 @@ IO_DEBUG(
                     self.assertEqual(actual_output, expected_output)
 
     def test_decode_timestamp_zero(self):
-        argv = ['cantools', 'decode', 'tests/files/dbc/socialledge.dbc']
+        argv = [
+            'cantools',
+            'decode',
+            '--prune',
+            'tests/files/dbc/socialledge.dbc'
+        ]
         input_data = """\
  (000.000000)  vcan0  0C8   [8]  F0 00 00 00 00 00 00 00
  (002.047817)  vcan0  064   [8]  F0 01 FF FF FF FF FF FF
@@ -157,7 +198,7 @@ DRIVER_HEARTBEAT(
  (012.831664)  vcan0  1F4   [4]  01 02 03 04 ::
 IO_DEBUG(
     IO_DEBUG_test_unsigned: 1,
-    IO_DEBUG_test_enum: 'IO_DEBUG_test2_enum_two',
+    IO_DEBUG_test_enum: two,
     IO_DEBUG_test_signed: 3,
     IO_DEBUG_test_float: 2.0
 )
@@ -200,6 +241,7 @@ CanFd(
         argv = [
             'cantools',
             'decode',
+            '--prune',
             'tests/files/dbc/socialledge.dbc'
         ]
         input_data = """\
@@ -230,7 +272,7 @@ DRIVER_HEARTBEAT(
 (1594172462.356874) vcan0 1F4#01020304 ::
 IO_DEBUG(
     IO_DEBUG_test_unsigned: 1,
-    IO_DEBUG_test_enum: 'IO_DEBUG_test2_enum_two',
+    IO_DEBUG_test_enum: two,
     IO_DEBUG_test_signed: 3,
     IO_DEBUG_test_float: 2.0
 )
@@ -250,6 +292,7 @@ IO_DEBUG(
         argv = [
             'cantools',
             'decode',
+            '--prune',
             '--single-line',
             'tests/files/dbc/socialledge.dbc'
         ]
@@ -268,7 +311,7 @@ IO_DEBUG(
   vcan0  064   [10]  F0 01 FF FF FF FF FF FF FF FF :: DRIVER_HEARTBEAT(DRIVER_HEARTBEAT_cmd: 240)
   vcan0  ERROR
 
-  vcan0  1F4   [4]  01 02 03 04 :: IO_DEBUG(IO_DEBUG_test_unsigned: 1, IO_DEBUG_test_enum: 'IO_DEBUG_test2_enum_two', IO_DEBUG_test_signed: 3, IO_DEBUG_test_float: 2.0)
+  vcan0  1F4   [4]  01 02 03 04 :: IO_DEBUG(IO_DEBUG_test_unsigned: 1, IO_DEBUG_test_enum: two, IO_DEBUG_test_signed: 3, IO_DEBUG_test_float: 2.0)
   vcan0  1F3   [3]  01 02 03 :: Unknown frame id 499 (0x1f3)
 """
 
@@ -285,6 +328,7 @@ IO_DEBUG(
         argv = [
             'cantools',
             'decode',
+            '--prune',
             '--single-line',
             'tests/files/dbc/socialledge.dbc'
         ]
@@ -303,7 +347,7 @@ IO_DEBUG(
 (1594172462.126542) vcan0 064#F001FFFFFFFFFFFFFFFF :: DRIVER_HEARTBEAT(DRIVER_HEARTBEAT_cmd: 240)
 (1594172462.127684) vcan0 ERROR
 
-(1594172462.356874) vcan0 1F4#01020304 :: IO_DEBUG(IO_DEBUG_test_unsigned: 1, IO_DEBUG_test_enum: 'IO_DEBUG_test2_enum_two', IO_DEBUG_test_signed: 3, IO_DEBUG_test_float: 2.0)
+(1594172462.356874) vcan0 1F4#01020304 :: IO_DEBUG(IO_DEBUG_test_unsigned: 1, IO_DEBUG_test_enum: two, IO_DEBUG_test_signed: 3, IO_DEBUG_test_float: 2.0)
 (1594172462.688432) vcan0 1F3#010203 :: Unknown frame id 499 (0x1f3)
 """
 
@@ -697,11 +741,11 @@ BATTERY_VT(
 
   ------------------------------------------------------------------------
 
-  Name:       ExampleMessage
-  Id:         0x1f0
-  Length:     8 bytes
-  Cycle time: - ms
-  Senders:    PCM1
+  Name:           ExampleMessage
+  Id:             0x1f0
+  Length:         8 bytes
+  Cycle time:     - ms
+  Senders:        PCM1
   Layout:
 
                           Bit
@@ -754,6 +798,7 @@ BATTERY_VT(
                 actual_output = stdout.getvalue()
                 self.assertEqual(actual_output, expected_output)
 
+    @with_fake_screen_width(screen_width=80)
     def test_dump_with_comments(self):
         argv = [
             'cantools',
@@ -767,11 +812,11 @@ BATTERY_VT(
 
   ------------------------------------------------------------------------
 
-  Name:       ExampleMessage
-  Id:         0x1f0
-  Length:     8 bytes
-  Cycle time: - ms
-  Senders:    PCM1
+  Name:           ExampleMessage
+  Id:             0x1f0
+  Length:         8 bytes
+  Cycle time:     - ms
+  Senders:        PCM1
   Layout:
 
                           Bit
@@ -826,6 +871,7 @@ BATTERY_VT(
                 actual_output = stdout.getvalue()
                 self.assertEqual(actual_output, expected_output)
 
+    @with_fake_screen_width(screen_width=80)
     def test_dump_with_comments_mux(self):
         argv = [
             'cantools',
@@ -839,16 +885,16 @@ BATTERY_VT(
 
   ------------------------------------------------------------------------
 
-  Name:       Message1
-  Id:         0x123456
+  Name:           Message1
+  Id:             0x123456
       Priority:       0
       PGN:            0x01200
       Source:         0x56
       Destination:    0x34
       Format:         PDU 1
-  Length:     8 bytes
-  Cycle time: 0 ms
-  Senders:    -
+  Length:         8 bytes
+  Cycle time:     - ms
+  Senders:        -
   Layout:
 
                           Bit
@@ -939,11 +985,11 @@ BATTERY_VT(
 
   ------------------------------------------------------------------------
 
-  Name:       Foo
-  Id:         0x1d8
-  Length:     1 bytes
-  Cycle time: - ms
-  Senders:    -
+  Name:           Foo
+  Id:             0x1d8
+  Length:         1 bytes
+  Cycle time:     - ms
+  Senders:        -
   Layout:
 
                           Bit
@@ -975,6 +1021,7 @@ BATTERY_VT(
         argv = [
             'cantools',
             'dump',
+            '--prune',
             'tests/files/dbc/dump_signal_choices.dbc'
         ]
 
@@ -983,11 +1030,11 @@ BATTERY_VT(
 
   ------------------------------------------------------------------------
 
-  Name:       Message0
-  Id:         0x400
-  Length:     8 bytes
-  Cycle time: - ms
-  Senders:    Node0
+  Name:           Message0
+  Id:             0x400
+  Length:         8 bytes
+  Cycle time:     - ms
+  Senders:        Node0
   Layout:
 
                           Bit
@@ -1023,20 +1070,20 @@ BATTERY_VT(
   Signal choices:
 
     FooSignal
-        0 FOO_A
-        1 FOO_B
-        2 FOO_C
-        3 FOO_D
+        0 A
+        1 B
+        2 C
+        3 D
 
     BarSignal
-        0 BAR_A
-        1 BAR_B
-        2 BAR_C
-        3 BAR_D
-        4 BAR_E
-        5 BAR_F
-        6 BAR_G
-        7 BAR_H
+        0 A
+        1 B
+        2 C
+        3 D
+        4 E
+        5 F
+        6 G
+        7 H
 
   ------------------------------------------------------------------------
 """
@@ -1061,16 +1108,16 @@ BATTERY_VT(
 
   ------------------------------------------------------------------------
 
-  Name:       Message1
-  Id:         0x15340201
+  Name:           Message1
+  Id:             0x15340201
       Priority:       5
       PGN:            0x13400
       Source:         0x01
       Destination:    0x02
       Format:         PDU 1
-  Length:     8 bytes
-  Cycle time: 0 ms
-  Senders:    Node1
+  Length:         8 bytes
+  Cycle time:     - ms
+  Senders:        Node1
   Layout:
 
                           Bit
@@ -1103,16 +1150,16 @@ BATTERY_VT(
 
   ------------------------------------------------------------------------
 
-  Name:       Message2
-  Id:         0x15f01002
+  Name:           Message2
+  Id:             0x15f01002
       Priority:       5
       PGN:            0x1f010
       Source:         0x02
       Destination:    All
       Format:         PDU 2
-  Length:     8 bytes
-  Cycle time: 0 ms
-  Senders:    Node2
+  Length:         8 bytes
+  Cycle time:     - ms
+  Senders:        Node2
   Layout:
 
                           Bit
@@ -1213,6 +1260,7 @@ BATTERY_VT(
             'padding_bit_order',
             'vehicle',
             'floating_point',
+            'floating_point_use_float',
             'no_signals',
             'choices',
             'multiplex',
@@ -1233,6 +1281,8 @@ BATTERY_VT(
                 'generate_c_source',
                 'tests/files/dbc/{}.dbc'.format(database)
             ]
+            if database == 'floating_point_use_float':
+                argv.insert(-1, '--use-float')
 
             database_h = basename + '.h'
             database_c = basename + '.c'

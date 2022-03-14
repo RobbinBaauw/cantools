@@ -10,6 +10,7 @@ from ..database.can.c_source import camel_to_snake_case
 def _do_generate_c_source(args):
     dbase = database.load_file(args.infile,
                                encoding=args.encoding,
+                               prune_choices=args.prune,
                                strict=not args.no_strict)
 
     if args.database_name is None:
@@ -31,7 +32,8 @@ def _do_generate_c_source(args):
         filename_c,
         fuzzer_filename_c,
         not args.no_floating_point_numbers,
-        args.bit_fields)
+        args.bit_fields,
+        args.use_float)
 
     os.makedirs(args.output_directory, exist_ok=True)
     
@@ -88,6 +90,10 @@ def add_subparser(subparsers):
         '-e', '--encoding',
         help='File encoding.')
     generate_c_source_parser.add_argument(
+        '--prune',
+        action='store_true',
+        help='Try to shorten the names of named signal choices.')
+    generate_c_source_parser.add_argument(
         '--no-strict',
         action='store_true',
         help='Skip database consistency checks.')
@@ -99,6 +105,10 @@ def add_subparser(subparsers):
         '-o', '--output-directory',
         default='.',
         help='Directory in which to write output files.')
+    generate_c_source_parser.add_argument(
+        '--use-float',
+        action='store_true',
+        help='Use float instead of double for floating point generation.')
     generate_c_source_parser.add_argument(
         'infile',
         help='Input database file.')

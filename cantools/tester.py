@@ -1,16 +1,8 @@
 # The tester module.
 
 import time
-
-try:
-    from collections import UserDict
-except ImportError:
-    from UserDict import UserDict
-
-try:
-    import queue
-except ImportError:
-    import Queue as queue
+from collections import UserDict
+import queue
 
 import can
 
@@ -200,7 +192,7 @@ class Message(UserDict, object):
                                     self.scaling,
                                     self.padding)
         self._can_message = can.Message(arbitration_id=arbitration_id,
-                                        extended_id=extended_id,
+                                        is_extended_id=extended_id,
                                         data=data)
 
         if self._periodic_task is not None:
@@ -213,7 +205,7 @@ class Message(UserDict, object):
             maximum = 0 if not signal.maximum else signal.maximum
             if signal.initial:
                 # use initial signal value (if set)
-                initial_sig_values[signal.name] = signal.initial
+                initial_sig_values[signal.name] = (signal.initial * signal.decimal.scale) + signal.decimal.offset
             elif minimum <= 0 <= maximum:
                 # use 0 if in allowed range
                 initial_sig_values[signal.name] = 0

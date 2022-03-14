@@ -1,4 +1,5 @@
-bitstruct
+bitstruct >= 8.12.1
+crccheck
 codespell
 mock
 python-can
@@ -7,3 +8,5 @@ diskcache
 nala; python_version >= '3.6'
 argparse_addons
 matplotlib
+parameterized
+mypy>=0.931

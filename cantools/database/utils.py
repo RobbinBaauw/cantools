@@ -1,21 +1,20 @@
 # Utility functions.
 
 import binascii
+import os.path
+import re
 from decimal import Decimal
-from collections import namedtuple
+from typing import Dict, Union, List, Callable
+
+from typing_extensions import Literal, Final
+
+from cantools.database.can.signal import NamedSignalValue, Signal
+from cantools.typechecking import Formats
 
 try:
     import bitstruct.c
 except ImportError:
     import bitstruct
-
-
-Formats = namedtuple('Formats',
-                     [
-                         'big_endian',
-                         'little_endian',
-                         'padding_mask'
-                     ])
 
 
 def format_or(items):
@@ -50,6 +49,8 @@ def _encode_field(field, data, scaling):
 
     if isinstance(value, str):
         return field.choice_string_to_number(value)
+    elif isinstance(value, NamedSignalValue):
+        return field.choice_string_to_number(str(value))
     elif scaling:
         if field.is_float:
             return (value - field.offset) / field.scale
@@ -68,9 +69,9 @@ def _decode_field(field, value, decode_choices, scaling):
         except (KeyError, TypeError):
             pass
 
-    is_int = \
-        lambda x: x is isinstance(x, int) or (isinstance(x, float) and x.is_integer())
     if scaling:
+        is_int = \
+            lambda x: isinstance(x, int) or (isinstance(x, float) and x.is_integer())
         if field.is_float \
            or not is_int(field.scale) \
            or not is_int(field.offset):
@@ -97,7 +98,12 @@ def encode_data(data, fields, formats, scaling):
     return packed_union
 
 
-def decode_data(data, fields, formats, decode_choices, scaling):
+def decode_data(data: bytes,
+                fields: List[Signal],
+                formats: Formats,
+                decode_choices: bool,
+                scaling: bool,
+                ) -> Dict[str, Union[float, str]]:
     unpacked = formats.big_endian.unpack(bytes(data))
     unpacked.update(formats.little_endian.unpack(bytes(data[::-1])))
 
@@ -150,9 +156,13 @@ def create_encode_decode_formats(datas, number_of_bytes):
         items = []
         start = 0
 
-        for data in datas:
-            if data.byte_order == 'little_endian':
-                continue
+        # Select BE fields
+        be_datas = [data for data in datas if data.byte_order == "big_endian"]
+
+        # Ensure BE fields are sorted in network order
+        sorted_datas = sorted(be_datas, key = lambda data: sawtooth_to_network_bitnum(data.start))
+
+        for data in sorted_datas:
 
             padding_length = (start_bit(data) - start)
 
@@ -212,3 +222,140 @@ def create_encode_decode_formats(datas, number_of_bytes):
     return Formats(big_compiled,
                    little_compiled,
                    big_padding_mask & little_padding_mask)
+
+
+def sawtooth_to_network_bitnum(sawtooth_bitnum):
+    '''Convert SawTooth bit number to Network bit number
+
+    Byte     |   0   |   1   |
+    Sawtooth |7 ... 0|15... 8|
+    Network  |0 ... 7|8 ...15|
+    '''
+    return (8 * (sawtooth_bitnum // 8)) + (7 - (sawtooth_bitnum % 8))
+
+
+def cdd_offset_to_dbc_start_bit(cdd_offset, bit_length, byte_order):
+    '''Convert CDD/c-style field bit offset to DBC field start bit convention.
+
+    BigEndian (BE) fields are located by their MSBit's sawtooth index.
+    LitteleEndian (LE) fields located by their LSBit's sawtooth index.
+    '''
+    if byte_order == "big_endian":
+        # Note: Allow for BE fields that are smaller or larger than 8 bits.
+        return (8 * (cdd_offset // 8)) + min(7, (cdd_offset % 8) + bit_length - 1)
+    else:
+        return cdd_offset
+
+def prune_signal_choices(signal):
+    '''Shorten the names of the signal choices of a single signal
+
+    For signals with multiple named values this means removing the
+    longest common prefix that ends with an underscore and for which
+    the removal still result the named signal values to be valid
+    python identifiers. For signals with a single named choice, this
+    means removing all leading segments between underscores which
+    occur before a segment that contains a digit.
+
+    Examples:
+
+    ..code:: text
+
+       MyMessage_MySignal_Uint32_Choice1, MyMessage_MySignal_Uint32_Choice2
+       -> Choice1, Choice2
+       MyMessage_MySignal_Uint32_NotAvailable
+       -> NotAvailable
+
+    '''
+
+    if signal.choices is None:
+        # no named choices
+        return
+
+    if len(signal.choices) == 1:
+        # signal exhibits only a single named value: Use the longest
+        # postfix starting with an underscore that does not contain
+        # digits as the new name. If no such suffix exists, leave the
+        # choice alone...
+        key = next(iter(signal.choices.keys()))
+        choice = next(iter(signal.choices.values()))
+        m = re.match(r'^[0-9A-Za-z_]*?_([A-Za-z_]+)$', choice.name)
+        val = str(choice)
+        if m:
+            val = m.group(1)
+
+        if isinstance(choice, str):
+            signal.choices[key] = val
+        else:
+            # assert isinstance(choice, NamedSignalValue)
+            signal.choices[key]._name = val
+        return
+
+    # if there are multiple choices, remove the longest common prefix
+    # that ends with an underscore from all of them provided that the
+    # names of the choices stay valid identifiers
+    choice_values = [ str(x) for x in signal.choices.values() ]
+    full_prefix = os.path.commonprefix(choice_values)
+    i = full_prefix.rfind('_')
+
+    if i >= 0:
+        full_prefix = full_prefix[0:i]
+    else:
+        # full_prefix does not contain an underscore
+        # but the following algorithm assumes it does
+        # and would strip too much
+        return
+
+    if not full_prefix:
+        # the longest possible prefix is empty, i.e., there is nothing
+        # to strip from the names of the signal choices
+        return
+
+    full_prefix_segments = full_prefix.split('_')
+
+    # find the longest prefix of the choices which keeps all
+    # names valid python identifiers
+    prefix = ''
+    n = 0
+    valid_name_re = re.compile('^[a-zA-Z_][a-zA-Z0-9_]*$')
+    for i in range(len(full_prefix_segments), -1, -1):
+        if i == 0:
+            # there is no such non-empty prefix
+            return
+
+        prefix = '_'.join(full_prefix_segments[:i]) + '_'
+        n = len(prefix)
+
+        if all([valid_name_re.match(x[n:]) for x in choice_values]):
+            break
+
+    # remove the prefix from the choice names
+    for key, choice in signal.choices.items():
+        if isinstance(choice, str):
+            signal.choices[key] = choice[n:]
+        else:
+            # assert isinstance(choice, NamedSignalValue)
+            signal.choices[key]._name = choice._name[n:]
+
+def prune_database_choices(database):
+    '''
+    Prune names of all named signal values of all signals of a database
+    '''
+    for message in database.messages:
+
+        for signal in message.signals:
+            prune_signal_choices(signal)
+
+        if message.contained_messages is not None:
+            for cm in message.contained_messages:
+                for cs in cm.signals:
+                    prune_signal_choices(cs)
+
+
+SORT_SIGNALS_DEFAULT: Final = 'default'
+type_sort_signals = Union[Callable[[List[Signal]], List[Signal]], Literal['default'], None]
+
+def sort_signals_by_start_bit(signals: List[Signal]) -> List[Signal]:
+	return list(sorted(signals, key=start_bit))
+
+def sort_signals_by_start_bit_reversed(signals: List[Signal]) -> List[Signal]:
+	return list(reversed(sorted(signals, key=start_bit)))

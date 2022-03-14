@@ -255,6 +255,32 @@ Dump given database in a human readable format:
 
      ------------------------------------------------------------------------
 
+The list subcommand
+^^^^^^^^^^^^^^^^^^^
+
+Print all information of a given database in a human readable
+format. This is very similar to the "dump" subcommand, but the output
+is less pretty, slightly more comprehensive and easier to parse by
+shell scripts:
+
+.. code-block:: bash
+
+    $ python3 -m cantools list -a tests/files/dbc/motohawk.dbc
+    ExampleMessage:
+      Comment[None]: Example message used as template in MotoHawk models.
+      Frame ID: 0x1f0 (496)
+      Size: 8 bytes
+      Is extended frame: False
+      Signals:
+        Enable:
+          Type: Integer
+          Start bit: 7
+          Length: 1 bits
+          Unit: -
+          Is signed: False
+          Named values:
+            0: Disabled
+
 The generate C source subcommand
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -285,6 +311,14 @@ database. The database is ``tests/files/dbc/motohawk.dbc``.
 
 See `motohawk.h`_ and `motohawk.c`_ for the contents of the generated
 files.
+
+In this example we use ``--use-float`` so floating point numbers in the generated
+code are single precision (``float``) instead of double precision (``double``).
+
+.. code-block:: text
+
+   $ python3 -m cantools generate_c_source --use-float tests/files/dbc/motohawk.dbc
+   Successfully generated motohawk.h and motohawk.c.
 
 In the next example we use ``--database-name`` to set a custom
 namespace for all generated types, defines and functions. The output

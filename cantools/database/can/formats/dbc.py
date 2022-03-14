@@ -1,7 +1,7 @@
 # Load and dump a CAN database in DBC format.
 
 import re
-from collections import OrderedDict as odict
+from collections import OrderedDict
 from collections import defaultdict
 from decimal import Decimal
 from copy import deepcopy
@@ -23,6 +23,7 @@ from textparser import Optional
 from ..attribute_definition import AttributeDefinition
 from ..attribute import Attribute
 from ..signal import Signal
+from ..signal import NamedSignalValue
 from ..signal import Decimal as SignalDecimal
 from ..signal_group import SignalGroup
 from ..message import Message
@@ -32,6 +33,7 @@ from ..internal_database import InternalDatabase
 from ..environment_variable import EnvironmentVariable
 
 from .utils import num
+from ...utils import type_sort_signals, sort_signals_by_start_bit, sort_signals_by_start_bit_reversed, SORT_SIGNALS_DEFAULT
 
 
 DBC_FMT = (
@@ -281,7 +283,7 @@ class Parser(textparser.Parser):
 
         attribute_definition_rel = Sequence(
             'BA_DEF_REL_',
-            Optional('BU_SG_REL_'),
+            Optional(choice('BU_SG_REL_', 'BU_BO_REL_')),
             'STRING',
             'WORD',
             choice(DelimitedList('STRING'), OneOrMore('NUMBER')),
@@ -290,9 +292,13 @@ class Parser(textparser.Parser):
         attribute_definition_default_rel = Sequence(
             'BA_DEF_DEF_REL_', 'STRING', choice('NUMBER', 'STRING'), ';')
 
-        attribute_rel = Sequence(
+        attribute_rel_sg = Sequence(
             'BA_REL_', 'STRING', 'BU_SG_REL_', 'WORD', 'SG_', 'NUMBER',
             'WORD', choice('NUMBER', 'STRING'), ';')
+
+        attribute_rel_bo = Sequence(
+            'BA_REL_', 'STRING', 'BU_BO_REL_', 'WORD', 'NUMBER',
+            choice('NUMBER', 'STRING'), ';')
 
         choice_ = Sequence(
             'VAL_',
@@ -329,7 +335,8 @@ class Parser(textparser.Parser):
                 value_table,
                 choice_,
                 attribute,
-                attribute_rel,
+                attribute_rel_sg,
+                attribute_rel_bo,
                 attribute_definition_rel,
                 attribute_definition_default,
                 attribute_definition_default_rel,
@@ -352,16 +359,16 @@ class DbcSpecifics(object):
                  environment_variables=None,
                  value_tables=None):
         if attributes is None:
-            attributes = odict()
+            attributes = OrderedDict()
 
         if attribute_definitions is None:
-            attribute_definitions = odict()
+            attribute_definitions = OrderedDict()
 
         if environment_variables is None:
-            environment_variables = odict()
+            environment_variables = OrderedDict()
 
         if value_tables is None:
-            value_tables = odict()
+            value_tables = OrderedDict()
 
         self._attributes = attributes
         self._attribute_definitions = attribute_definitions
@@ -487,7 +494,7 @@ def _dump_value_tables(database):
     return val_table + ['']
 
 
-def _dump_messages(database):
+def _dump_messages(database, sort_signals):
     bo = []
 
     def format_mux(signal):
@@ -519,7 +526,11 @@ def _dump_messages(database):
                 length=message.length,
                 senders=format_senders(message)))
 
-        for signal in message.signals[::-1]:
+        if sort_signals:
+            signals = sort_signals(message.signals)
+        else:
+            signals = message.signals
+        for signal in signals:
             fmt = (' SG_ {name}{mux} : {start}|{length}@{byte_order}{sign}'
                    ' ({scale},{offset})'
                    ' [{minimum}|{maximum}] "{unit}" {receivers}')
@@ -555,7 +566,7 @@ def _dump_senders(database):
     return bo_tx_bu
 
 
-def _dump_comments(database):
+def _dump_comments(database, sort_signals):
     cm = []
 
     for bus in database.buses:
@@ -578,7 +589,11 @@ def _dump_comments(database):
                     frame_id=get_dbc_frame_id(message),
                     comment=message.comment.replace('"', '\\"')))
 
-        for signal in message.signals[::-1]:
+        if sort_signals:
+            signals = sort_signals(message.signals)
+        else:
+            signals = message.signals
+        for signal in signals:
             if signal.comment is not None:
                 cm.append(
                     'CM_ SG_ {frame_id} {name} "{comment}";'.format(
@@ -605,14 +620,27 @@ def _dump_signal_types(database):
 
     return valtype
 
+def _create_GenMsgCycleTime_definition():
+    return AttributeDefinition('GenMsgCycleTime',
+                               default_value=0,
+                               kind='BO_',
+                               type_name='INT',
+                               minimum=0,
+                               maximum=2**16-1)
 
 def _dump_attribute_definitions(database):
     ba_def = []
 
     if database.dbc is None:
-        return ba_def
+        definitions = OrderedDict()
+    else:
+        definitions = database.dbc.attribute_definitions
 
-    definitions = database.dbc.attribute_definitions
+    # define "GenMsgCycleTime" attribute for specifying the cycle
+    # times of messages if it has not been explicitly defined
+    if 'GenMsgCycleTime' not in definitions:
+        definitions['GenMsgCycleTime'] = \
+            _create_GenMsgCycleTime_definition()
 
     def get_value(definition, value):
         if definition.minimum is None:
@@ -663,9 +691,15 @@ def _dump_attribute_definition_defaults(database):
     ba_def_def = []
 
     if database.dbc is None:
-        return ba_def_def
+        definitions = OrderedDict()
+    else:
+        definitions = database.dbc.attribute_definitions
 
-    definitions = database.dbc.attribute_definitions
+    # define "GenMsgCycleTime" attribute for specifying the cycle
+    # times of messages if it has not been explicitly defined
+    if 'GenMsgCycleTime' not in definitions:
+        definitions['GenMsgCycleTime'] = \
+            _create_GenMsgCycleTime_definition()
 
     for definition in definitions.values():
         if definition.default_value is not None:
@@ -679,8 +713,7 @@ def _dump_attribute_definition_defaults(database):
 
     return ba_def_def
 
-
-def _dump_attributes(database):
+def _dump_attributes(database, sort_signals):
     ba = []
 
     def get_value(attribute):
@@ -694,52 +727,66 @@ def _dump_attributes(database):
     if database.dbc is not None:
         if database.dbc.attributes is not None:
             for attribute in database.dbc.attributes.values():
-                ba.append(
-                    'BA_ "{name}" {value};'.format(name=attribute.definition.name,
-                                                   value=get_value(attribute)))
+                ba.append(f'BA_ "{attribute.definition.name}" '
+                          f'{get_value(attribute)};')
 
     for node in database.nodes:
         if node.dbc is not None:
             if node.dbc.attributes is not None:
                 for attribute in node.dbc.attributes.values():
-                    ba.append(
-                        'BA_ "{name}" {kind} {node_name} {value};'.format(
-                            name=attribute.definition.name,
-                            kind=attribute.definition.kind,
-                            node_name=node.name,
-                            value=get_value(attribute)))
+                    ba.append(f'BA_ "{attribute.definition.name}" '
+                              f'{attribute.definition.kind} '
+                              f'{node.name} '
+                              f'{get_value(attribute)};')
 
     for message in database.messages:
-        if message.dbc is not None:
-            if message.dbc.attributes is not None:
-                for attribute in message.dbc.attributes.values():
-                    ba.append(
-                        'BA_ "{name}" {kind} {frame_id} {value};'.format(
-                            name=attribute.definition.name,
-                            kind=attribute.definition.kind,
-                            frame_id=get_dbc_frame_id(message),
-                            value=get_value(attribute)))
+        # retrieve the ordered dictionary of message attributes
+        msg_attributes = OrderedDict()
+        if message.dbc is not None and message.dbc.attributes is not None:
+            msg_attributes = message.dbc.attributes
 
-        for signal in message.signals[::-1]:
-            if signal.dbc is not None:
-                if signal.dbc.attributes is not None:
-                    for attribute in signal.dbc.attributes.values():
-                        ba.append(
-                            'BA_ "{name}" {kind} {frame_id} {signal_name} {value};'.format(
-                                name=attribute.definition.name,
-                                kind=attribute.definition.kind,
-                                frame_id=get_dbc_frame_id(message),
-                                signal_name=signal.name,
-                                value=get_value(attribute)))
+        # synchronize the attribute for the message cycle time with
+        # the cycle time specified by the message object
+        if message.cycle_time is None and 'GenMsgCycleTime' in msg_attributes:
+            del msg_attributes['GenMsgCycleTime']
+        elif message.cycle_time is not None:
+            msg_attributes['GenMsgCycleTime'] = \
+                Attribute(value=message.cycle_time,
+                          definition=_create_GenMsgCycleTime_definition())
+
+        # output all message attributes
+        for attribute in msg_attributes.values():
+            ba.append(f'BA_ "{attribute.definition.name}" '
+                      f'{attribute.definition.kind} '
+                      f'{get_dbc_frame_id(message)} '
+                      f'{get_value(attribute)};')
+
+        # handle the signals contained in the message
+        if sort_signals:
+            signals = sort_signals(message.signals)
+        else:
+            signals = message.signals
+        for signal in signals:
+            if signal.dbc is not None and signal.dbc.attributes is not None:
+                for attribute in signal.dbc.attributes.values():
+                    ba.append(f'BA_ "{attribute.definition.name}" '
+                              f'{attribute.definition.kind} '
+                              f'{get_dbc_frame_id(message)} '
+                              f'{signal.name} '
+                              f'{get_value(attribute)};')
 
     return ba
 
 
-def _dump_choices(database):
+def _dump_choices(database, sort_signals):
     val = []
 
     for message in database.messages:
-        for signal in message.signals[::-1]:
+        if sort_signals:
+            signals = sort_signals(message.signals)
+        else:
+            signals = message.signals
+        for signal in signals:
             if signal.choices is None:
                 continue
 
@@ -891,7 +938,7 @@ def _load_attribute_definitions(tokens):
 
 
 def _load_attribute_definition_defaults(tokens):
-    defaults = odict()
+    defaults = OrderedDict()
 
     for default_attr in tokens.get('BA_DEF_DEF_', []):
         defaults[default_attr[1]] = default_attr[2]
@@ -900,8 +947,8 @@ def _load_attribute_definition_defaults(tokens):
 
 
 def _load_attributes(tokens, definitions):
-    attributes = odict()
-    attributes['node'] = odict()
+    attributes = OrderedDict()
+    attributes['node'] = OrderedDict()
 
     def to_object(attribute):
         value = attribute[3]
@@ -929,13 +976,13 @@ def _load_attributes(tokens, definitions):
 
                 if frame_id_dbc not in attributes:
                     attributes[frame_id_dbc] = {}
-                    attributes[frame_id_dbc]['message'] = odict()
+                    attributes[frame_id_dbc]['message'] = OrderedDict()
 
                 if 'signal' not in attributes[frame_id_dbc]:
-                    attributes[frame_id_dbc]['signal'] = odict()
+                    attributes[frame_id_dbc]['signal'] = OrderedDict()
 
                 if signal not in attributes[frame_id_dbc]['signal']:
-                    attributes[frame_id_dbc]['signal'][signal] = odict()
+                    attributes[frame_id_dbc]['signal'][signal] = OrderedDict()
 
                 attributes[frame_id_dbc]['signal'][signal][name] = to_object(attribute)
             elif kind == 'BO_':
@@ -943,29 +990,29 @@ def _load_attributes(tokens, definitions):
 
                 if frame_id_dbc not in attributes:
                     attributes[frame_id_dbc] = {}
-                    attributes[frame_id_dbc]['message'] = odict()
+                    attributes[frame_id_dbc]['message'] = OrderedDict()
 
                 attributes[frame_id_dbc]['message'][name] = to_object(attribute)
             elif kind == 'BU_':
                 node = item[1]
 
                 if node not in attributes['node']:
-                    attributes['node'][node] = odict()
+                    attributes['node'][node] = OrderedDict()
 
                 attributes['node'][node][name] = to_object(attribute)
             elif kind == 'EV_':
                 envvar = item[1]
 
                 if 'envvar' not in attributes:
-                    attributes['envvar'] = odict()
+                    attributes['envvar'] = OrderedDict()
 
                 if envvar not in attributes['envvar']:
-                    attributes['envvar'][envvar] = odict()
+                    attributes['envvar'][envvar] = OrderedDict()
 
                 attributes['envvar'][envvar][name] = to_object(attribute)
         else:
             if 'database' not in attributes:
-                attributes['database'] = odict()
+                attributes['database'] = OrderedDict()
 
             attributes['database'][name] = to_object(attribute)
 
@@ -977,18 +1024,19 @@ def _load_value_tables(tokens):
 
     """
 
-    value_tables = odict()
+    value_tables = OrderedDict()
 
     for value_table in tokens.get('VAL_TABLE_', []):
         name = value_table[1]
-        choices = {int(number): text for number, text in value_table[2]}
+        choices = {int(number): NamedSignalValue(int(number), text) for number, text in value_table[2]}
+        #choices = {int(number): text for number, text in value_table[2]}
         value_tables[name] = choices
 
     return value_tables
 
 
 def _load_environment_variables(tokens, comments, attributes):
-    environment_variables = odict()
+    environment_variables = OrderedDict()
 
     for env_var in tokens.get('EV_', []):
         name = _get_environment_variable_name(attributes, env_var[1])
@@ -1013,7 +1061,7 @@ def _load_choices(tokens):
         if len(choice[1]) == 0:
             continue
 
-        od = odict((int(''.join(v[0])), v[1]) for v in choice[3])
+        od = OrderedDict((int(v[0]), NamedSignalValue(int(v[0]), v[1])) for v in choice[3])
 
         if len(od) == 0:
             continue
@@ -1245,7 +1293,7 @@ def _load_signals(tokens,
 
     def get_signal_spn(frame_id_dbc, name):
         signal_attributes = get_attributes(frame_id_dbc, name)
-        
+
         try:
             return signal_attributes['SPN'].value
         except (KeyError, TypeError):
@@ -1302,7 +1350,8 @@ def _load_messages(tokens,
                    signal_multiplexer_values,
                    strict,
                    bus_name,
-                   signal_groups):
+                   signal_groups,
+                   sort_signals):
     """Load messages.
 
     """
@@ -1337,8 +1386,11 @@ def _load_messages(tokens,
 
         try:
             result = message_attributes['GenMsgSendType'].value
-            # Resolve ENUM index to ENUM text
-            result = definitions['GenMsgSendType'].choices[int(result)]
+            
+            # if definitions is enum (otherwise above value is maintained) -> Prevents ValueError
+            if definitions['GenMsgSendType'].choices != None:
+                # Resolve ENUM index to ENUM text
+                result = definitions['GenMsgSendType'].choices[int(result)]
         except (KeyError, TypeError):
             try:
                 result = definitions['GenMsgSendType'].default_value
@@ -1355,10 +1407,12 @@ def _load_messages(tokens,
         message_attributes = get_attributes(frame_id_dbc)
 
         try:
-            return int(message_attributes['GenMsgCycleTime'].value)
+            result = int(message_attributes['GenMsgCycleTime'].value)
+            return None if result == 0 else result
         except (KeyError, TypeError):
             try:
-                return int(definitions['GenMsgCycleTime'].default_value)
+                result = int(definitions['GenMsgCycleTime'].default_value)
+                return None if result == 0 else result
             except (KeyError, TypeError):
                 return None
 
@@ -1456,9 +1510,11 @@ def _load_messages(tokens,
                     signals=signals,
                     comment=get_comment(frame_id_dbc),
                     strict=strict,
+                    unused_bit_pattern=0xff,
                     protocol=get_protocol(frame_id_dbc),
                     bus_name=bus_name,
-                    signal_groups=get_signal_groups(frame_id_dbc)))
+                    signal_groups=get_signal_groups(frame_id_dbc),
+                    sort_signals=sort_signals))
 
     return messages
 
@@ -1615,10 +1671,13 @@ def make_names_unique(database):
     return database
 
 
-def dump_string(database):
+def dump_string(database: InternalDatabase, sort_signals: type_sort_signals = SORT_SIGNALS_DEFAULT) -> str:
     """Format database in DBC file format.
 
     """
+
+    if sort_signals == SORT_SIGNALS_DEFAULT:
+        sort_signals = sort_signals_by_start_bit_reversed
 
     # Make a deep copy of the database as names and attributes will be
     # modified for items with long names.
@@ -1627,14 +1686,14 @@ def dump_string(database):
     database = make_names_unique(database)
     bu = _dump_nodes(database)
     val_table = _dump_value_tables(database)
-    bo = _dump_messages(database)
+    bo = _dump_messages(database, sort_signals)
     bo_tx_bu = _dump_senders(database)
-    cm = _dump_comments(database)
+    cm = _dump_comments(database, sort_signals)
     signal_types = _dump_signal_types(database)
     ba_def = _dump_attribute_definitions(database)
     ba_def_def = _dump_attribute_definition_defaults(database)
-    ba = _dump_attributes(database)
-    val = _dump_choices(database)
+    ba = _dump_attributes(database, sort_signals)
+    val = _dump_choices(database, sort_signals)
     sig_group = _dump_signal_groups(database)
     sig_mux_values = _dump_signal_mux_values(database)
 
@@ -1654,7 +1713,7 @@ def dump_string(database):
 
 
 def get_definitions_dict(definitions, defaults):
-    result = odict()
+    result = OrderedDict()
 
     def convert_value(definition, value):
         if definition.type_name in ['INT', 'HEX']:
@@ -1693,7 +1752,7 @@ def get_definitions_dict(definitions, defaults):
     return result
 
 
-def load_string(string, strict=True):
+def load_string(string:str, strict:bool=True, sort_signals:type_sort_signals=sort_signals_by_start_bit) -> InternalDatabase:
     """Parse given string.
 
     """
@@ -1722,7 +1781,8 @@ def load_string(string, strict=True):
                               signal_multiplexer_values,
                               strict,
                               bus.name if bus else None,
-                              signal_groups)
+                              signal_groups,
+                              sort_signals)
     nodes = _load_nodes(tokens, comments, attributes, attribute_definitions)
     version = _load_version(tokens)
     environment_variables = _load_environment_variables(tokens, comments, attributes)

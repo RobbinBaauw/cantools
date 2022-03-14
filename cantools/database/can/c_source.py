@@ -377,7 +377,7 @@ SIGNAL_DECLARATION_ENCODE_DECODE_FMT = '''\
  *
  * @return Encoded signal.
  */
-{type_name} {message_name}_{signal_name}_encode(double value);
+{type_name} {message_name}_{signal_name}_encode({floating_point_type} value);
 
 /**
  * Decode given signal by applying scaling and offset.
@@ -386,7 +386,7 @@ SIGNAL_DECLARATION_ENCODE_DECODE_FMT = '''\
  *
  * @return Decoded signal.
  */
-double {message_name}_{signal_name}_decode({type_name} value);
+{floating_point_type} {message_name}_{signal_name}_decode({type_name} value);
 
 '''
 
@@ -474,12 +474,12 @@ int {message_name}_unpack(
 '''
 
 SIGNAL_DEFINITION_ENCODE_DECODE_FMT = '''\
-{type_name} {message_name}_{signal_name}_encode(double value)
+{type_name} {message_name}_{signal_name}_encode({floating_point_type} value)
 {{
     return ({type_name})({encode});
 }}
 
-double {message_name}_{signal_name}_decode({type_name} value)
+{floating_point_type} {message_name}_{signal_name}_decode({type_name} value)
 {{
     return ({decode});
 }}
@@ -626,7 +626,7 @@ class Signal(object):
         """
 
         items = {
-            value: camel_to_snake_case(name).upper()
+            value: camel_to_snake_case(str(name)).upper()
             for value, name in self.choices.items()
         }
         names = list(items.values())
@@ -821,16 +821,17 @@ def _format_comment(comment):
         return ''
 
 
-def _format_decimal(value, is_float=False):
+def _format_decimal(value, is_float=False, use_float=False):
+    f_append = 'f' if use_float else ''
     if int(value) == value:
         value = int(value)
 
         if is_float:
-            return str(value) + '.0'
+            return f'{value}.0{f_append}'
         else:
             return str(value)
     else:
-        return str(value)
+        return f'{value}{f_append}'
 
 
 def _format_range(signal):
@@ -1199,35 +1200,36 @@ def _format_choices(signal, signal_name):
             fmt = '{signal_name}_{name}_CHOICE ({value}u)'
 
         choices.append(fmt.format(signal_name=signal_name.upper(),
-                                  name=name,
+                                  name=str(name),
                                   value=value))
 
     return choices
 
 
-def _generate_encode_decode(message):
+def _generate_encode_decode(message, use_float):
     encode_decode = []
 
+    floating_point_type = _get_floating_point_type(use_float)
     for signal in message.signals:
         scale = signal.decimal.scale
         offset = signal.decimal.offset
-        formatted_scale = _format_decimal(scale, is_float=True)
-        formatted_offset = _format_decimal(offset, is_float=True)
+        formatted_scale = _format_decimal(scale, is_float=True, use_float=use_float)
+        formatted_offset = _format_decimal(offset, is_float=True, use_float=use_float)
 
         if offset == 0 and scale == 1:
             encoding = 'value'
-            decoding = '(double)value'
+            decoding = '({})value'.format(floating_point_type)
         elif offset != 0 and scale != 1:
             encoding = '(value - {}) / {}'.format(formatted_offset,
                                                   formatted_scale)
-            decoding = '((double)value * {}) + {}'.format(formatted_scale,
-                                                          formatted_offset)
+            decoding = '(({})value * {}) + {}'.format(floating_point_type, formatted_scale,
+                                                      formatted_offset)
         elif offset != 0:
             encoding = 'value - {}'.format(formatted_offset)
-            decoding = '(double)value + {}'.format(formatted_offset)
+            decoding = '({})value + {}'.format(floating_point_type, formatted_offset)
         else:
             encoding = 'value / {}'.format(formatted_scale)
-            decoding = '(double)value * {}'.format(formatted_scale)
+            decoding = '({})value * {}'.format(floating_point_type, formatted_scale)
 
         encode_decode.append((encoding, decoding))
 
@@ -1377,7 +1379,10 @@ def _generate_structs(database_name, messages, bit_fields):
     return '\n'.join(structs)
 
 
-def _generate_declarations(database_name, messages, floating_point_numbers):
+def _get_floating_point_type(use_float):
+    return 'float' if use_float else 'double'
+
+def _generate_declarations(database_name, messages, floating_point_numbers, use_float):
     declarations = []
 
     for message in messages:
@@ -1391,7 +1396,8 @@ def _generate_declarations(database_name, messages, floating_point_numbers):
                     database_name=database_name,
                     message_name=message.snake_name,
                     signal_name=signal.snake_name,
-                    type_name=signal.type_name)
+                    type_name=signal.type_name,
+                    floating_point_type=_get_floating_point_type(use_float))
 
             signal_declaration += SIGNAL_DECLARATION_IS_IN_RANGE_FMT.format(
                 database_name=database_name,
@@ -1413,7 +1419,7 @@ def _generate_declarations(database_name, messages, floating_point_numbers):
     return '\n'.join(declarations)
 
 
-def _generate_definitions(database_name, messages, floating_point_numbers):
+def _generate_definitions(database_name, messages, floating_point_numbers, use_float):
     definitions = []
     pack_helper_kinds = set()
     unpack_helper_kinds = set()
@@ -1422,7 +1428,7 @@ def _generate_definitions(database_name, messages, floating_point_numbers):
         signal_definitions = []
 
         for signal, (encode, decode), check in zip(message.signals,
-                                                   _generate_encode_decode(message),
+                                                   _generate_encode_decode(message, use_float),
                                                    _generate_is_in_range(message)):
             if check == 'true':
                 unused = '    (void)value;\n\n'
@@ -1438,7 +1444,8 @@ def _generate_definitions(database_name, messages, floating_point_numbers):
                     signal_name=signal.snake_name,
                     type_name=signal.type_name,
                     encode=encode,
-                    decode=decode)
+                    decode=decode,
+                    floating_point_type=_get_floating_point_type(use_float))
 
             signal_definition += SIGNAL_DEFINITION_IS_IN_RANGE_FMT.format(
                 database_name=database_name,
@@ -1557,7 +1564,8 @@ def generate(database,
              source_name,
              fuzzer_source_name,
              floating_point_numbers=True,
-             bit_fields=False):
+             bit_fields=False,
+             use_float=False):
     """Generate C source code from given CAN database `database`.
 
     `database_name` is used as a prefix for all defines, data
@@ -1576,6 +1584,9 @@ def generate(database,
     numbers in the generated code.
 
     Set `bit_fields` to ``True`` to generate bit fields in structs.
+
+    Set `use_float` to ``True`` to prefer the `float` type instead
+    of the `double` type for floating point numbers.
 
     This function returns a tuple of the C header and source files as
     strings.
@@ -1598,10 +1609,12 @@ def generate(database,
     structs = _generate_structs(database_name, messages, bit_fields)
     declarations = _generate_declarations(database_name,
                                           messages,
-                                          floating_point_numbers)
+                                          floating_point_numbers,
+                                          use_float)
     definitions, helper_kinds = _generate_definitions(database_name,
                                                       messages,
-                                                      floating_point_numbers)
+                                                      floating_point_numbers,
+                                                      use_float)
     helpers = _generate_helpers(helper_kinds)
 
     header = HEADER_FMT.format(version=__version__,

@@ -4,6 +4,7 @@ import re
 import logging
 from collections import OrderedDict as odict
 from decimal import Decimal
+from typing import List
 
 import textparser
 from textparser import Sequence
@@ -18,11 +19,13 @@ from textparser import Optional
 from textparser import Any
 
 from ..signal import Signal
+from ..signal import NamedSignalValue
 from ..signal import Decimal as SignalDecimal
 from ..message import Message
 from ..internal_database import InternalDatabase
 
 from .utils import num
+from ...utils import type_sort_signals, sort_signals_by_start_bit
 from ...errors import ParseError
 
 
@@ -49,7 +52,8 @@ class Parser60(textparser.Parser):
         'Timeout',
         'MinInterval',
         'Color',
-        'Var'
+        'Var',
+        'Type'
     ])
 
     def tokenize(self, string):
@@ -79,7 +83,8 @@ class Parser60(textparser.Parser):
             'B':           '-b',
             'S':           '-s',
             'T':           '-t',
-            'V':           '-v'
+            'V':           '-v',
+            'DP':          '-p'
         }
 
         re_string = r'"(\\"|[^"])*?"'
@@ -87,6 +92,7 @@ class Parser60(textparser.Parser):
         token_specs = [
             ('SKIP',               r'[ \r\n\t]+'),
             ('COMMENT',            r'//.*?\n'),
+            ('HEXNUMBER',          r'-?\d+\.?[0-9A-F]*([eE][+-]?\d+)?(h)'),
             ('NUMBER',             r'-?\d+\.?[0-9A-F]*([eE][+-]?\d+)?'),
             ('STRING',             re_string),
             ('U',                  r'/u:({}|\S+)'.format(re_string)),
@@ -104,6 +110,7 @@ class Parser60(textparser.Parser):
             ('S',                  r'\-s'),
             ('T',                  r'\-t'),
             ('V',                  r'\-v'),
+            ('DP',                 r'\-p'),
             ('LPAREN',             r'\('),
             ('RPAREN',             r'\)'),
             ('LBRACE',             r'\['),
@@ -153,8 +160,9 @@ class Parser60(textparser.Parser):
         bit_rate_switch = Sequence('BRS' , '=', word)
 
         enum_value = Sequence('NUMBER', '=', 'STRING')
+        delim = Sequence(',', Optional('COMMENT'))
         enum = Sequence('Enum', '=', word,
-                        '(', Optional(DelimitedList(enum_value)), ')',
+                        '(', Optional(DelimitedList(enum_value, delim=delim)), ')',
                         Optional('COMMENT'))
 
         sig_unit = '/u:'
@@ -184,7 +192,7 @@ class Parser60(textparser.Parser):
 
         variable = Sequence('Var', '=', Any(), word,
                             'NUMBER', ',', 'NUMBER',
-                            ZeroOrMore(choice('-v', '-m', '-s')),
+                            ZeroOrMore(choice('-v', '-m', '-s', '-h')),
                             ZeroOrMore(choice(sig_unit,
                                               sig_factor,
                                               sig_offset,
@@ -198,19 +206,21 @@ class Parser60(textparser.Parser):
 
         symbol = Sequence('[', Any(), ']',
                           ZeroOrMoreDict(choice(
-                              Sequence('ID', '=', 'NUMBER', word,
-                                       Optional(Sequence('NUMBER', word)),
+                              Sequence('ID', '=', 'HEXNUMBER',
+                                       Optional('HEXNUMBER'),
                                        Optional('COMMENT')),
                               Sequence('Len', '=', 'NUMBER'),
                               Sequence('Mux', '=', Any(), 'NUMBER', ',',
-                                       'NUMBER', 'NUMBER',
-                                       Optional('-t')),
-                              Sequence('CycleTime', '=', 'NUMBER'),
+                                       'NUMBER', choice('NUMBER', 'HEXNUMBER'),
+                                       ZeroOrMore(choice('-t', '-m')),
+                                       Optional('COMMENT')),
+                              Sequence('CycleTime', '=', 'NUMBER', Optional('-p')),
                               Sequence('Timeout', '=', 'NUMBER'),
                               Sequence('MinInterval', '=', 'NUMBER'),
-                              Sequence('Color', '=', 'NUMBER', 'WORD'),
+                              Sequence('Color', '=', 'HEXNUMBER'),
                               variable,
-                              Sequence('Sig', '=', Any(), 'NUMBER'))))
+                              Sequence('Sig', '=', Any(), 'NUMBER'),
+                              Sequence('Type', '=', Any()))))
 
         enums = Sequence('{ENUMS}', ZeroOrMore(choice(enum, 'COMMENT')))
         signals = Sequence('{SIGNALS}', ZeroOrMore(choice(signal, 'COMMENT')))
@@ -256,15 +266,21 @@ def _get_enum(enums, name):
 
 def _load_enums(tokens):
     section = _get_section_tokens(tokens, '{ENUMS}')
-    enums = {}
+    all_enums = {}
 
     for _, _, name, _, values, _, _ in section:
         if values:
             values = values[0]
 
-        enums[name] = odict((num(v[0]), v[2]) for v in values)
+        enum = odict()
+        for v in values:
+            value = num(v[0])
+            value_name = v[2]
+            enum[value] = NamedSignalValue(value, value_name)
 
-    return enums
+        all_enums[name] = enum
+
+    return all_enums
 
 
 def _load_signal_type_and_length(type_, tokens, enums):
@@ -416,9 +432,7 @@ def _load_message_signal(tokens,
                          multiplexer_ids):
     signal = signals[tokens[2]]
     start = int(tokens[3])
-
-    if signal.byte_order == 'big_endian':
-        start = (8 * (start // 8) + (7 - (start % 8)))
+    start = _convert_start(start, signal.byte_order)
 
     return Signal(name=signal.name,
                   start=start,
@@ -439,6 +453,10 @@ def _load_message_signal(tokens,
                   is_float=signal.is_float,
                   decimal=signal.decimal)
 
+def _convert_start(start, byte_order):
+    if byte_order == 'big_endian':
+        start = (8 * (start // 8) + (7 - (start % 8)))
+    return start
 
 def _load_message_variable(tokens,
                            enums,
@@ -462,7 +480,7 @@ def _load_message_variable(tokens,
                                              enums)
 
     # Byte order.
-    if tokens[7] == ['-m']:
+    if '-m' in tokens[7]:
         byte_order = 'big_endian'
 
     # Comment.
@@ -478,8 +496,7 @@ def _load_message_variable(tokens,
         maximum,
         decimal)
 
-    if byte_order == 'big_endian':
-        start = (8 * (start // 8) + (7 - (start % 8)))
+    start = _convert_start(start, byte_order)
 
     return Signal(name=name,
                   start=start,
@@ -525,19 +542,39 @@ def _load_muxed_message_signals(message_tokens,
                                 message_section_tokens,
                                 signals,
                                 enums):
+    def get_mutliplexer_ids(mux_tokens):
+        base = 10
+        mux_id = mux_tokens[6]
+        if mux_id.endswith('h'):
+            base = 16
+            mux_id = mux_id[:-1]
+
+        return [int(mux_id, base=base)]
+
     mux_tokens = message_tokens[3]['Mux'][0]
     multiplexer_signal = mux_tokens[2]
+    if '-m' in mux_tokens[7]:
+        byte_order = 'big_endian'
+    else:
+        byte_order = 'little_endian'
+    start = int(mux_tokens[3])
+    start = _convert_start(start, byte_order)
+    if mux_tokens[8]:
+        comment = _load_comment(mux_tokens[8][0])
+    else:
+        comment = None
     result = [
         Signal(name=multiplexer_signal,
-               start=int(mux_tokens[3]),
+               start=start,
                length=int(mux_tokens[5]),
-               byte_order='little_endian',
+               byte_order=byte_order,
                is_multiplexer=True,
-               decimal=SignalDecimal(Decimal(1), Decimal(0))
+               decimal=SignalDecimal(Decimal(1), Decimal(0)),
+               comment=comment,
         )
     ]
 
-    multiplexer_ids = [int(mux_tokens[6])]
+    multiplexer_ids = get_mutliplexer_ids(mux_tokens)
     result += _load_message_signals_inner(message_tokens,
                                           signals,
                                           enums,
@@ -547,7 +584,7 @@ def _load_muxed_message_signals(message_tokens,
     for tokens in message_section_tokens:
         if tokens[1] == message_tokens[1] and tokens != message_tokens:
             mux_tokens = tokens[3]['Mux'][0]
-            multiplexer_ids = [int(mux_tokens[6])]
+            multiplexer_ids = get_mutliplexer_ids(mux_tokens)
             result += _load_message_signals_inner(tokens,
                                                   signals,
                                                   enums,
@@ -576,13 +613,32 @@ def _load_message_signals(message_tokens,
                                            enums)
 
 
+def _get_senders(section_name: str) -> List[str]:
+    """Generates a list of senders for a message based on the Send, Receive or Send/Receive
+    flag defined in the SYM file. Since the Message object only has a senders property on it,
+    it is easiest to translate Send flags into a sender named 'ECU', and translate Receive flags
+    into a sender named 'Peripherals'. This is not the cleanest representation of the data,
+    however, SYM files are unique in only having a Send, Receive or Send/Receive Direction. Most
+    other file formats specify a list of custom-named sending devices
+    """
+    if section_name == '{SEND}':
+        return ['ECU']
+    elif section_name == '{RECEIVE}':
+        return ['Peripherals']
+    elif section_name == '{SENDRECEIVE}':
+        return ['ECU', 'Peripherals']
+    else:
+        raise ValueError(f'Unexpected message section named {section_name}')
+
 def _load_message(frame_id,
                   is_extended_frame,
                   message_tokens,
                   message_section_tokens,
                   signals,
                   enums,
-                  strict):
+                  strict,
+                  sort_signals,
+                  section_name):
     #print(message_tokens)
     # Default values.
     name = message_tokens[1]
@@ -607,7 +663,8 @@ def _load_message(frame_id,
                    is_extended_frame=is_extended_frame,
                    name=name,
                    length=length,
-                   senders=[],
+                   unused_bit_pattern=0xff,
+                   senders=_get_senders(section_name),
                    send_type=None,
                    cycle_time=cycle_time,
                    signals=_load_message_signals(message_tokens,
@@ -616,30 +673,38 @@ def _load_message(frame_id,
                                                  enums),
                    comment=comment,
                    bus_name=None,
-                   strict=strict)
+                   strict=strict,
+                   sort_signals=sort_signals)
 
 
 def _parse_message_frame_ids(message):
     def to_int(string):
         return int(string, 16)
 
-    def is_extended_frame(string):
-        return len(string) == 8
+    def is_extended_frame(string, type):
+        # Length of 9 includes terminating 'h' for hex
+        return len(string) == 9 or type.lower() in ['extended', 'fdextended']
 
-    message = message[3]['ID'][0]
-    minimum = to_int(message[2])
+    message = message[3]
 
-    if message[4]:
-        maximum = -to_int(message[4][0][0])
+    message_id = message['ID'][0]
+    minimum = to_int(message_id[2][:-1])
+
+    if message_id[3]:
+        maximum = to_int(message_id[3][0][1:-1])
     else:
         maximum = minimum
 
     frame_ids = range(minimum, maximum + 1)
 
-    return frame_ids, is_extended_frame(message[2])
+    message_type = 'Standard'
+    if 'Type' in message:
+        message_type = message['Type'][0][2]
+
+    return frame_ids, is_extended_frame(message_id[2], message_type)
 
 
-def _load_message_section(section_name, tokens, signals, enums, strict):
+def _load_message_section(section_name, tokens, signals, enums, strict, sort_signals):
     def has_frame_id(message):
         return 'ID' in message[3]
 
@@ -659,16 +724,18 @@ def _load_message_section(section_name, tokens, signals, enums, strict):
                                     message_section_tokens,
                                     signals,
                                     enums,
-                                    strict)
+                                    strict,
+                                    sort_signals,
+                                    section_name)
             messages.append(message)
 
     return messages
 
 
-def _load_messages(tokens, signals, enums, strict):
-    messages = _load_message_section('{SEND}', tokens, signals, enums, strict)
-    messages += _load_message_section('{RECEIVE}', tokens, signals, enums, strict)
-    messages += _load_message_section('{SENDRECEIVE}', tokens, signals, enums, strict)
+def _load_messages(tokens, signals, enums, strict, sort_signals):
+    messages = _load_message_section('{SEND}', tokens, signals, enums, strict, sort_signals)
+    messages += _load_message_section('{RECEIVE}', tokens, signals, enums, strict, sort_signals)
+    messages += _load_message_section('{SENDRECEIVE}', tokens, signals, enums, strict, sort_signals)
 
     return messages
 
@@ -677,7 +744,7 @@ def _load_version(tokens):
     return tokens[1][2]
 
 
-def load_string(string, strict=True):
+def load_string(string:str, strict:bool=True, sort_signals:type_sort_signals=sort_signals_by_start_bit) -> InternalDatabase:
     """Parse given string.
 
     """
@@ -690,10 +757,9 @@ def load_string(string, strict=True):
     version = _load_version(tokens)
     enums = _load_enums(tokens)
     signals = _load_signals(tokens, enums)
-    messages = _load_messages(tokens, signals, enums, strict)
+    messages = _load_messages(tokens, signals, enums, strict, sort_signals)
 
     return InternalDatabase(messages,
                             [],
                             [],
-                            version,
-                            [])
+                            version)
