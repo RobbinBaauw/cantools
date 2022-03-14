@@ -1,1 +1,1 @@
-__version__ = '37.0.7'
+__version__ = 'dut-0.2'
