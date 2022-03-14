@@ -842,19 +842,19 @@ def _format_range(signal):
 
     if minimum is not None and maximum is not None:
         return '{}..{} ({}..{} {})'.format(
-            _format_decimal((minimum - offset) / scale),
-            _format_decimal((maximum - offset) / scale),
+            _format_decimal((minimum - offset) * scale),
+            _format_decimal((maximum - offset) * scale),
             minimum,
             maximum,
             signal.unit)
     elif minimum is not None:
         return '{}.. ({}.. {})'.format(
-            _format_decimal((minimum - offset) / scale),
+            _format_decimal((minimum - offset) * scale),
             minimum,
             signal.unit)
     elif maximum is not None:
         return '..{} (..{} {})'.format(
-            _format_decimal((maximum - offset) / scale),
+            _format_decimal((maximum - offset) * scale),
             maximum,
             signal.unit)
     else:
