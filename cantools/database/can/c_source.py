@@ -837,28 +837,23 @@ def _format_decimal(value, is_float=False, use_float=False):
 def _format_range(signal):
     minimum = signal.decimal.minimum
     maximum = signal.decimal.maximum
+
+    signal_length = signal.length - (1 if signal.is_signed else 0)
+    signal_maximum = 1 << signal_length
+    if minimum is None:
+        minimum = -signal_maximum if signal.is_signed else 0
+    if maximum is None:
+        maximum = signal_maximum
+
     scale = signal.decimal.scale
     offset = signal.decimal.offset
 
-    if minimum is not None and maximum is not None:
-        return '{}..{} ({}..{} {})'.format(
-            _format_decimal((minimum - offset) * scale),
-            _format_decimal((maximum - offset) * scale),
-            minimum,
-            maximum,
-            signal.unit)
-    elif minimum is not None:
-        return '{}.. ({}.. {})'.format(
-            _format_decimal((minimum - offset) * scale),
-            minimum,
-            signal.unit)
-    elif maximum is not None:
-        return '..{} (..{} {})'.format(
-            _format_decimal((maximum - offset) * scale),
-            maximum,
-            signal.unit)
-    else:
-        return '-'
+    return '{}..{} ({}..{} {})'.format(
+        _format_decimal((minimum - offset) * scale),
+        _format_decimal((maximum - offset) * scale),
+        minimum,
+        maximum,
+        signal.unit)
 
 
 def _generate_signal(signal, bit_fields):
