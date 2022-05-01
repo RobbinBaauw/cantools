@@ -38,11 +38,13 @@ HEADER_FMT = '''\
 #ifndef {include_guard}
 #define {include_guard}
 
-#include <cstdint>
-#include <cstddef>
-#include <type_traits>
+#ifdef __cplusplus
+extern "C" {{
+#endif
 
-namespace can::{database_name} {{
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifndef EINVAL
 #    define EINVAL 22
@@ -63,16 +65,13 @@ namespace can::{database_name} {{
 /* Signal choices. */
 {choices_defines}
 
-template <typename Enum>
-constexpr inline std::enable_if_t<std::is_enum<Enum>::value, Enum> operator|=(Enum &a, Enum b) {{
-  using underlying = typename std::underlying_type_t<Enum>;
-  return a = static_cast<Enum>(static_cast<underlying>(a) | static_cast<underlying>(b));
-}}
-
 {structs}
 {declarations}
 
+#ifdef __cplusplus
 }}
+#endif
+
 #endif
 '''
 
@@ -111,12 +110,8 @@ SOURCE_FMT = '''\
 
 #include "{header}"
 
-namespace can::{database_name} {{
-
 {helpers}\
 {definitions}\
-
-}}
 '''
 
 FUZZER_SOURCE_FMT = '''\
@@ -334,7 +329,7 @@ STRUCT_FMT = '''\
 {comment}\
  * All signal values are as on the CAN bus.
  */
-struct {message_name}_t {{
+struct {database_name}_{message_name}_t {{
 {members}
 }};
 '''
@@ -349,9 +344,9 @@ DECLARATION_FMT = '''\
  *
  * @return Size of packed data, or negative error code.
  */
-int {message_name}_pack(
+int {database_name}_{message_name}_pack(
     uint8_t *dst_p,
-    const struct {message_name}_t *src_p,
+    const struct {database_name}_{message_name}_t *src_p,
     size_t size);
 
 /**
@@ -363,8 +358,8 @@ int {message_name}_pack(
  *
  * @return zero(0) or negative error code.
  */
-int {message_name}_unpack(
-    struct {message_name}_t *dst_p,
+int {database_name}_{message_name}_unpack(
+    struct {database_name}_{message_name}_t *dst_p,
     const uint8_t *src_p,
     size_t size);
 '''
@@ -377,7 +372,7 @@ SIGNAL_DECLARATION_ENCODE_DECODE_FMT = '''\
  *
  * @return Encoded signal.
  */
-{type_name} {message_name}_{signal_name}_encode({floating_point_type} value);
+{type_name} {database_name}_{message_name}_{signal_name}_encode({floating_point_type} value);
 
 /**
  * Decode given signal by applying scaling and offset.
@@ -386,8 +381,7 @@ SIGNAL_DECLARATION_ENCODE_DECODE_FMT = '''\
  *
  * @return Decoded signal.
  */
-{floating_point_type} {message_name}_{signal_name}_decode({type_name} value);
-
+{floating_point_type} {database_name}_{message_name}_{signal_name}_decode({type_name} value);
 '''
 
 SIGNAL_DECLARATION_IS_IN_RANGE_FMT = '''\
@@ -398,7 +392,7 @@ SIGNAL_DECLARATION_IS_IN_RANGE_FMT = '''\
  *
  * @return true if in range, false otherwise.
  */
-bool {message_name}_{signal_name}_is_in_range({type_name} value);
+bool {database_name}_{message_name}_{signal_name}_is_in_range({type_name} value);
 '''
 
 PACK_HELPER_LEFT_SHIFT_FMT = '''\
@@ -442,9 +436,9 @@ static inline {var_type} unpack_right_shift_u{length}(
 '''
 
 DEFINITION_FMT = '''\
-int {message_name}_pack(
+int {database_name}_{message_name}_pack(
     uint8_t *dst_p,
-    const struct {message_name}_t *src_p,
+    const struct {database_name}_{message_name}_t *src_p,
     size_t size)
 {{
 {pack_unused}\
@@ -458,8 +452,8 @@ int {message_name}_pack(
     return ({message_length});
 }}
 
-int {message_name}_unpack(
-    struct {message_name}_t *dst_p,
+int {database_name}_{message_name}_unpack(
+    struct {database_name}_{message_name}_t *dst_p,
     const uint8_t *src_p,
     size_t size)
 {{
@@ -474,12 +468,12 @@ int {message_name}_unpack(
 '''
 
 SIGNAL_DEFINITION_ENCODE_DECODE_FMT = '''\
-{type_name} {message_name}_{signal_name}_encode({floating_point_type} value)
+{type_name} {database_name}_{message_name}_{signal_name}_encode({floating_point_type} value)
 {{
     return ({type_name})({encode});
 }}
 
-{floating_point_type} {message_name}_{signal_name}_decode({type_name} value)
+{floating_point_type} {database_name}_{message_name}_{signal_name}_decode({type_name} value)
 {{
     return ({decode});
 }}
@@ -487,7 +481,7 @@ SIGNAL_DEFINITION_ENCODE_DECODE_FMT = '''\
 '''
 
 SIGNAL_DEFINITION_IS_IN_RANGE_FMT = '''\
-bool {message_name}_{signal_name}_is_in_range({type_name} value)
+bool {database_name}_{message_name}_{signal_name}_is_in_range({type_name} value)
 {{
 {unused}\
     return ({check});
@@ -495,9 +489,9 @@ bool {message_name}_{signal_name}_is_in_range({type_name} value)
 '''
 
 EMPTY_DEFINITION_FMT = '''\
-int {message_name}_pack(
+int {database_name}_{message_name}_pack(
     uint8_t *dst_p,
-    const struct {message_name}_t *src_p,
+    const struct {database_name}_{message_name}_t *src_p,
     size_t size)
 {{
     (void)dst_p;
@@ -507,8 +501,8 @@ int {message_name}_pack(
     return (0);
 }}
 
-int {message_name}_unpack(
-    struct {message_name}_t *dst_p,
+int {database_name}_{message_name}_unpack(
+    struct {database_name}_{message_name}_t *dst_p,
     const uint8_t *src_p,
     size_t size)
 {{
@@ -761,7 +755,7 @@ class Message(object):
         self.database_name = database_name
 
         self.snake_name = camel_to_snake_case(self.name)
-        self.struct_name = f"{self.snake_name}_t"
+        self.struct_name = f"{self.database_name}_{self.snake_name}_t"
 
         self.signals = [Signal(signal) for signal in message.signals]
 
@@ -889,6 +883,7 @@ def _generate_enum(message, signal):
         choices.append(choice)
 
     enum = SIGNAL_ENUM_FMT.format(name=signal.enum_name,
+                                  type_name=signal.type_name,
                                   fields="".join(choices))
 
     return enum
@@ -1075,7 +1070,10 @@ def _format_unpack_code_signal(message,
         elif signal.choices is None:
             line = f'    dst_p->{signal.snake_name} {operator} unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u);'
         else:
-            line = f'    dst_p->{signal.snake_name} {operator} static_cast<{message.struct_name}::{signal.enum_name}>(unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u));'
+            if i == 0:
+                line = f'    dst_p->{signal.snake_name} = static_cast<{message.struct_name}::{signal.enum_name}>(unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u));'
+            else:
+                line = f'    dst_p->{signal.snake_name} = static_cast<{message.struct_name}::{signal.enum_name}>(({signal.type_name}) dst_p->{signal.snake_name} | unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u));'
 
         body_lines.append(line)
         helper_kinds.add((shift_direction, signal.type_length))
