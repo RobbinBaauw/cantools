@@ -850,7 +850,7 @@ def _format_range(signal):
         signal.unit)
 
 
-def _generate_signal(signal, bit_fields):
+def _generate_signal(signal, bit_fields, use_enums):
     comment = _format_comment(signal.comment)
     range_ = _format_range(signal)
     scale = _get(signal.scale, '-')
@@ -862,7 +862,7 @@ def _generate_signal(signal, bit_fields):
         length = ' : {}'.format(signal.length)
 
     type_name = signal.type_name
-    if signal.choices is not None:
+    if use_enums and signal.choices is not None:
         type_name = signal.enum_name
 
     member = SIGNAL_MEMBER_FMT.format(comment=comment,
@@ -893,13 +893,15 @@ def _format_pack_code_mux(message,
                           mux,
                           body_lines_per_index,
                           variable_lines,
-                          helper_kinds):
+                          helper_kinds,
+                          use_enums):
     signal_name, multiplexed_signals = list(mux.items())[0]
     _format_pack_code_signal(message,
                              signal_name,
                              body_lines_per_index,
                              variable_lines,
-                             helper_kinds)
+                             helper_kinds,
+                             use_enums)
     multiplexed_signals_per_id = sorted(list(multiplexed_signals.items()))
     signal_name = camel_to_snake_case(signal_name)
 
@@ -912,7 +914,8 @@ def _format_pack_code_mux(message,
         body_lines = _format_pack_code_level(message,
                                              multiplexed_signals,
                                              variable_lines,
-                                             helper_kinds)
+                                             helper_kinds,
+                                             use_enums)
         lines.append('')
         lines.append('case {}:'.format(multiplexer_id))
 
@@ -934,7 +937,8 @@ def _format_pack_code_signal(message,
                              signal_name,
                              body_lines,
                              variable_lines,
-                             helper_kinds):
+                             helper_kinds,
+                             use_enums):
     signal = message.get_signal_by_name(signal_name)
 
     if signal.is_float or signal.is_signed:
@@ -955,7 +959,7 @@ def _format_pack_code_signal(message,
     for index, shift, shift_direction, mask in signal.segments(invert_shift=False):
         if signal.is_float or signal.is_signed:
             line = f'    dst_p[{index}] |= pack_{shift_direction}_shift_u{signal.type_length}({signal.snake_name}, {shift}u, 0x{mask:02x}u);'
-        elif signal.choices is None:
+        elif not use_enums or signal.choices is None:
             line = f'    dst_p[{index}] |= pack_{shift_direction}_shift_u{signal.type_length}(src_p->{signal.snake_name}, {shift}u, 0x{mask:02x}u);'
         else:
             line = f'    dst_p[{index}] |= pack_{shift_direction}_shift_u{signal.type_length}(static_cast<{signal.type_name}>(src_p->{signal.snake_name}), {shift}u, 0x{mask:02x}u);'
@@ -967,7 +971,8 @@ def _format_pack_code_signal(message,
 def _format_pack_code_level(message,
                             signal_names,
                             variable_lines,
-                            helper_kinds):
+                            helper_kinds,
+                            use_enums):
     """Format one pack level in a signal tree.
 
     """
@@ -981,14 +986,16 @@ def _format_pack_code_level(message,
                                               signal_name,
                                               body_lines,
                                               variable_lines,
-                                              helper_kinds)
+                                              helper_kinds,
+                                              use_enums)
             muxes_lines += mux_lines
         else:
             _format_pack_code_signal(message,
                                      signal_name,
                                      body_lines,
                                      variable_lines,
-                                     helper_kinds)
+                                     helper_kinds,
+                                     use_enums)
 
     body_lines = body_lines + muxes_lines
 
@@ -998,12 +1005,13 @@ def _format_pack_code_level(message,
     return body_lines
 
 
-def _format_pack_code(message, helper_kinds):
+def _format_pack_code(message, helper_kinds, use_enums):
     variable_lines = []
     body_lines = _format_pack_code_level(message,
                                          message.signal_tree,
                                          variable_lines,
-                                         helper_kinds)
+                                         helper_kinds,
+                                         use_enums)
 
     if variable_lines:
         variable_lines = sorted(list(set(variable_lines))) + ['', '']
@@ -1015,13 +1023,15 @@ def _format_unpack_code_mux(message,
                             mux,
                             body_lines_per_index,
                             variable_lines,
-                            helper_kinds):
+                            helper_kinds,
+                            use_enums):
     signal_name, multiplexed_signals = list(mux.items())[0]
     _format_unpack_code_signal(message,
                                signal_name,
                                body_lines_per_index,
                                variable_lines,
-                               helper_kinds)
+                               helper_kinds,
+                               use_enums)
     multiplexed_signals_per_id = sorted(list(multiplexed_signals.items()))
     signal_name = camel_to_snake_case(signal_name)
 
@@ -1033,7 +1043,8 @@ def _format_unpack_code_mux(message,
         body_lines = _format_unpack_code_level(message,
                                                multiplexed_signals,
                                                variable_lines,
-                                               helper_kinds)
+                                               helper_kinds,
+                                               use_enums)
         lines.append('')
         lines.append('case {}:'.format(multiplexer_id))
         lines.extend(_strip_blank_lines(body_lines))
@@ -1052,7 +1063,8 @@ def _format_unpack_code_signal(message,
                                signal_name,
                                body_lines,
                                variable_lines,
-                               helper_kinds):
+                               helper_kinds,
+                               use_enums):
     signal = message.get_signal_by_name(signal_name)
     conversion_type_name = 'uint{}_t'.format(signal.type_length)
 
@@ -1067,7 +1079,7 @@ def _format_unpack_code_signal(message,
 
         if signal.is_float or signal.is_signed:
             line = f'    {signal.snake_name} {operator} unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u);'
-        elif signal.choices is None:
+        elif not use_enums or signal.choices is None:
             line = f'    dst_p->{signal.snake_name} {operator} unpack_{shift_direction}_shift_u{signal.type_length}(src_p[{index}], {shift}u, 0x{mask:02x}u);'
         else:
             if i == 0:
@@ -1101,7 +1113,8 @@ def _format_unpack_code_signal(message,
 def _format_unpack_code_level(message,
                               signal_names,
                               variable_lines,
-                              helper_kinds):
+                              helper_kinds,
+                              use_enums):
     """Format one unpack level in a signal tree.
 
     """
@@ -1115,7 +1128,8 @@ def _format_unpack_code_level(message,
                                                 signal_name,
                                                 body_lines,
                                                 variable_lines,
-                                                helper_kinds)
+                                                helper_kinds,
+                                                use_enums)
 
             if muxes_lines:
                 muxes_lines.append('')
@@ -1126,7 +1140,8 @@ def _format_unpack_code_level(message,
                                        signal_name,
                                        body_lines,
                                        variable_lines,
-                                       helper_kinds)
+                                       helper_kinds,
+                                       use_enums)
 
     if body_lines:
         if body_lines[-1] != '':
@@ -1143,12 +1158,13 @@ def _format_unpack_code_level(message,
     return body_lines
 
 
-def _format_unpack_code(message, helper_kinds):
+def _format_unpack_code(message, helper_kinds, use_enums):
     variable_lines = []
     body_lines = _format_unpack_code_level(message,
                                            message.signal_tree,
                                            variable_lines,
-                                           helper_kinds)
+                                           helper_kinds,
+                                           use_enums)
 
     if variable_lines:
         variable_lines = sorted(list(set(variable_lines))) + ['', '']
@@ -1156,16 +1172,17 @@ def _format_unpack_code(message, helper_kinds):
     return '\n'.join(variable_lines), '\n'.join(body_lines)
 
 
-def _generate_struct(message, bit_fields):
+def _generate_struct(message, bit_fields, use_enums):
     members = []
 
-    for signal in message.signals:
-        if signal.choices is not None:
-            enum = _generate_enum(message, signal)
-            members.append(enum)
+    if use_enums:
+        for signal in message.signals:
+            if signal.choices is not None:
+                enum = _generate_enum(message, signal)
+                members.append(enum)
 
     for signal in message.signals:
-        members.append(_generate_signal(signal, bit_fields))
+        members.append(_generate_signal(signal, bit_fields, use_enums))
 
     if not members:
         members = [
@@ -1357,11 +1374,11 @@ def _generate_choices_defines(database_name, messages):
     return '\n\n'.join(choices_defines)
 
 
-def _generate_structs(database_name, messages, bit_fields):
+def _generate_structs(database_name, messages, bit_fields, use_enums):
     structs = []
 
     for message in messages:
-        comment, members = _generate_struct(message, bit_fields)
+        comment, members = _generate_struct(message, bit_fields, use_enums)
         structs.append(
             STRUCT_FMT.format(comment=comment,
                               database_message_name=message.name,
@@ -1412,7 +1429,7 @@ def _generate_declarations(database_name, messages, floating_point_numbers, use_
     return '\n'.join(declarations)
 
 
-def _generate_definitions(database_name, messages, floating_point_numbers, use_float):
+def _generate_definitions(database_name, messages, floating_point_numbers, use_float, use_enums):
     definitions = []
     pack_helper_kinds = set()
     unpack_helper_kinds = set()
@@ -1451,10 +1468,8 @@ def _generate_definitions(database_name, messages, floating_point_numbers, use_f
             signal_definitions.append(signal_definition)
 
         if message.length > 0:
-            pack_variables, pack_body = _format_pack_code(message,
-                                                          pack_helper_kinds)
-            unpack_variables, unpack_body = _format_unpack_code(message,
-                                                                unpack_helper_kinds)
+            pack_variables, pack_body = _format_pack_code(message, pack_helper_kinds, use_enums)
+            unpack_variables, unpack_body = _format_unpack_code(message, unpack_helper_kinds, use_enums)
             pack_unused = ''
             unpack_unused = ''
 
@@ -1558,7 +1573,8 @@ def generate(database,
              fuzzer_source_name,
              floating_point_numbers=True,
              bit_fields=False,
-             use_float=False):
+             use_float=False,
+             use_enums=False):
     """Generate C source code from given CAN database `database`.
 
     `database_name` is used as a prefix for all defines, data
@@ -1599,7 +1615,7 @@ def generate(database,
         database_name,
         messages)
     choices_defines = _generate_choices_defines(database_name, messages)
-    structs = _generate_structs(database_name, messages, bit_fields)
+    structs = _generate_structs(database_name, messages, bit_fields, use_enums)
     declarations = _generate_declarations(database_name,
                                           messages,
                                           floating_point_numbers,
@@ -1607,7 +1623,8 @@ def generate(database,
     definitions, helper_kinds = _generate_definitions(database_name,
                                                       messages,
                                                       floating_point_numbers,
-                                                      use_float)
+                                                      use_float,
+                                                      use_enums)
     helpers = _generate_helpers(helper_kinds)
 
     header = HEADER_FMT.format(version=__version__,
